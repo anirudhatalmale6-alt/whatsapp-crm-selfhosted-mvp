@@ -1,0 +1,4 @@
+.env
+.env.chatwoot
+backups/
+qr-*.png

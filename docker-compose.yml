@@ -1,0 +1,260 @@
+name: wacrm
+
+# ---------------------------------------------------------------------------
+# MVP CRM WhatsApp self-hosted
+#   - 1 contenedor Evolution API POR NUMERO  (aislamiento real de proceso)
+#   - 1 proxy 4G POR CONTENEDOR             (via PROXY_* de entorno)
+#   - 1 base de datos POR NUMERO            (sesion / credenciales separadas)
+#   - 1 indice Redis POR NUMERO             (cache separada)
+#   - Chatwoot = bandeja unica del equipo comercial
+# Reiniciar un numero  ->  docker compose restart evolution-n1
+# El otro numero NO se entera.
+# ---------------------------------------------------------------------------
+
+x-evolution-common: &evolution-common
+  image: ${EVOLUTION_IMAGE:-evoapicloud/evolution-api:v2.3.7}
+  restart: unless-stopped
+  networks: [core, edge]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 40s
+
+x-evolution-env: &evolution-env
+  SERVER_TYPE: http
+  SERVER_PORT: 8080
+  DEL_INSTANCE: "false"
+
+  DATABASE_PROVIDER: postgresql
+  DATABASE_CONNECTION_CLIENT_NAME: evolution_exchange
+  DATABASE_SAVE_DATA_INSTANCE: "true"
+  DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+  DATABASE_SAVE_MESSAGE_UPDATE: "true"
+  DATABASE_SAVE_DATA_CONTACTS: "true"
+  DATABASE_SAVE_DATA_CHATS: "true"
+  DATABASE_SAVE_DATA_LABELS: "true"
+  DATABASE_SAVE_DATA_HISTORIC: "true"
+
+  CACHE_REDIS_ENABLED: "true"
+  CACHE_REDIS_TTL: 604800
+  CACHE_REDIS_SAVE_INSTANCES: "false"
+  CACHE_LOCAL_ENABLED: "false"
+
+  CHATWOOT_ENABLED: "true"
+  CHATWOOT_MESSAGE_READ: "true"
+  CHATWOOT_MESSAGE_DELETE: "true"
+  CHATWOOT_BOT_CONTACT: "true"
+  CHATWOOT_IMPORT_PLACEHOLDER_MEDIA_MESSAGE: "true"
+
+  CONFIG_SESSION_PHONE_CLIENT: ${SESSION_PHONE_CLIENT:-Evolution API}
+  CONFIG_SESSION_PHONE_NAME: ${SESSION_PHONE_NAME:-Chrome}
+  QRCODE_LIMIT: 30
+
+  LOG_LEVEL: ERROR,WARN,INFO,WEBHOOKS
+  LOG_BAILEYS: error
+  LOG_COLOR: "false"
+  TELEMETRY_ENABLED: "false"
+  LANGUAGE: es
+
+services:
+
+  # ------------------------------------------------------------------ proxy/TLS
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_acme:/letsencrypt
+    networks: [edge]
+
+  # ------------------------------------------------------------------ datos
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    networks: [core]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    networks: [core]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------ NUMERO 1
+  evolution-n1:
+    <<: *evolution-common
+    container_name: wacrm-evolution-n1
+    environment:
+      <<: *evolution-env
+      SERVER_URL: https://${N1_HOST}
+      AUTHENTICATION_API_KEY: ${N1_API_KEY}
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/evolution_n1?schema=public
+      CHATWOOT_IMPORT_DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/chatwoot?sslmode=disable
+      CACHE_REDIS_URI: redis://redis:6379/1
+      CACHE_REDIS_PREFIX_KEY: evo_n1
+      # --- proxy 4G dedicado, a nivel de CONTENEDOR (todo el trafico del numero 1)
+      PROXY_HOST: ${N1_PROXY_HOST}
+      PROXY_PORT: ${N1_PROXY_PORT}
+      PROXY_PROTOCOL: ${N1_PROXY_PROTOCOL}
+      PROXY_USERNAME: ${N1_PROXY_USERNAME}
+      PROXY_PASSWORD: ${N1_PROXY_PASSWORD}
+    volumes:
+      - evo_n1_instances:/evolution/instances
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=wacrm_edge
+      - traefik.http.routers.evo-n1.rule=Host(`${N1_HOST}`)
+      - traefik.http.routers.evo-n1.entrypoints=websecure
+      - traefik.http.routers.evo-n1.tls.certresolver=le
+      - traefik.http.services.evo-n1.loadbalancer.server.port=8080
+
+  # ------------------------------------------------------------------ NUMERO 2
+  evolution-n2:
+    <<: *evolution-common
+    container_name: wacrm-evolution-n2
+    environment:
+      <<: *evolution-env
+      SERVER_URL: https://${N2_HOST}
+      AUTHENTICATION_API_KEY: ${N2_API_KEY}
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/evolution_n2?schema=public
+      CHATWOOT_IMPORT_DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/chatwoot?sslmode=disable
+      CACHE_REDIS_URI: redis://redis:6379/2
+      CACHE_REDIS_PREFIX_KEY: evo_n2
+      PROXY_HOST: ${N2_PROXY_HOST}
+      PROXY_PORT: ${N2_PROXY_PORT}
+      PROXY_PROTOCOL: ${N2_PROXY_PROTOCOL}
+      PROXY_USERNAME: ${N2_PROXY_USERNAME}
+      PROXY_PASSWORD: ${N2_PROXY_PASSWORD}
+    volumes:
+      - evo_n2_instances:/evolution/instances
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=wacrm_edge
+      - traefik.http.routers.evo-n2.rule=Host(`${N2_HOST}`)
+      - traefik.http.routers.evo-n2.entrypoints=websecure
+      - traefik.http.routers.evo-n2.tls.certresolver=le
+      - traefik.http.services.evo-n2.loadbalancer.server.port=8080
+
+  # ------------------------------------------------------------------ CRM
+  chatwoot:
+    image: ${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.16.2-ce}
+    restart: unless-stopped
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-b", "0.0.0.0", "-p", "3000"]
+    env_file: [.env.chatwoot]
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks: [core, edge]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=wacrm_edge
+      - traefik.http.routers.chatwoot.rule=Host(`${CRM_HOST}`)
+      - traefik.http.routers.chatwoot.entrypoints=websecure
+      - traefik.http.routers.chatwoot.tls.certresolver=le
+      - traefik.http.services.chatwoot.loadbalancer.server.port=3000
+
+  chatwoot-worker:
+    image: ${CHATWOOT_IMAGE:-chatwoot/chatwoot:v4.16.2-ce}
+    restart: unless-stopped
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    env_file: [.env.chatwoot]
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks: [core]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # ------------------------------------------------------------------ vigilancia
+  # Comprueba cada 60s el estado de cada numero. Si uno cae:
+  #   1) intenta /instance/restart   2) reinicia SOLO ese contenedor
+  #   3) avisa por webhook (Telegram / Slack / lo que se configure)
+  watchdog:
+    image: docker:27-cli
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/scripts/watchdog.sh"]
+    environment:
+      WATCH_INTERVAL: ${WATCH_INTERVAL:-60}
+      N1_API_KEY: ${N1_API_KEY}
+      N2_API_KEY: ${N2_API_KEY}
+      N1_INSTANCE: ${N1_INSTANCE}
+      N2_INSTANCE: ${N2_INSTANCE}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL}
+      COMPOSE_PROJECT: wacrm
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts:/scripts:ro
+      - watchdog_state:/state
+    networks: [core, edge]   # core = hablar con Evolution / edge = salir a avisar
+    depends_on: [evolution-n1, evolution-n2]
+
+networks:
+  edge:
+    name: wacrm_edge
+  core:
+    name: wacrm_core
+    internal: true
+
+volumes:
+  pg_data:
+  redis_data:
+  traefik_acme:
+  evo_n1_instances:
+  evo_n2_instances:
+  chatwoot_storage:
+  watchdog_state:
