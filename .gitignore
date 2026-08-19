@@ -2,3 +2,4 @@
 .env.chatwoot
 backups/
 qr-*.png
+scripts/informe-proxy-*.txt
