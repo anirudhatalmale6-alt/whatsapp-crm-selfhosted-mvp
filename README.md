@@ -24,6 +24,7 @@ scripts/backup.sh           copia de bases y de credenciales de sesión
 scripts/add-number.sh       genera el bloque para el número 3, 4, 5...
 docs/ARQUITECTURA.md        por qué este stack y cómo se aísla cada número
 docs/RUNBOOK.md             qué hacer cuando algo se cae (para el equipo)
+docs/PROXIES-Y-CALENTAMIENTO.md  elegir proxy 4G + cómo operar los números
 ```
 
 ---
