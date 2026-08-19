@@ -90,7 +90,11 @@ services:
 
   # ------------------------------------------------------------------ datos
   postgres:
-    image: postgres:16-alpine
+    # pgvector, NO el postgres normal: Chatwoot v4.16 declara la extension
+    # "vector" en su schema.rb y las migraciones fallan sin ella con
+    # 'extension "vector" is not available'. La imagen oficial de postgres
+    # (incluida la alpine) no la trae.
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:0.8.6-pg16}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
