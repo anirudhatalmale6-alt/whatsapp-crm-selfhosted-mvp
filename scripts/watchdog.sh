@@ -37,6 +37,18 @@ check() {
       return 0 ;;
   esac
 
+  # La instancia todavia NO existe (aun no se ha escaneado el QR de ese numero).
+  # Si el motor responde en la raiz pero no conoce la instancia, no hay nada
+  # roto que reparar: reiniciar el contenedor no la crearia. Sin esta
+  # comprobacion el vigilante reinicia los motores en bucle para siempre.
+  if ! echo "$state" | grep -q '"state"'; then
+    if wget -qO- --timeout=10 "http://$container:8080/" 2>/dev/null | grep -q '"status":200'; then
+      echo "[watchdog] $n: el motor esta sano pero la instancia '$instance' aun no existe (falta escanear el QR). No hago nada."
+      echo 0 > "$f"
+      return 0
+    fi
+  fi
+
   fails=$((fails + 1)); echo "$fails" > "$f"
   echo "[watchdog] $n caido (intento $fails) estado=$state"
 
