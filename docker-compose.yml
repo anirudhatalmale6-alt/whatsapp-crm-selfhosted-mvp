@@ -220,7 +220,13 @@ services:
     env_file: [.env.chatwoot]
     volumes:
       - chatwoot_storage:/app/storage
-    networks: [core]
+    # Tiene que estar tambien en "edge". La red "core" es internal: true, o sea
+    # SIN salida a internet, y es sidekiq (no el contenedor web) quien manda de
+    # verdad los correos: invitaciones de agentes y recuperacion de contrasena.
+    # Con solo "core" el trabajo muere en "getaddrinfo: Try again" al no poder
+    # resolver el servidor SMTP, y ademas Sidekiq lo reintenta, asi que el fallo
+    # se ve como "el correo no llega" sin ningun error a la vista en la web.
+    networks: [core, edge]
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
