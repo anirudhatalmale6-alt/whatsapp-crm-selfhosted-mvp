@@ -3,3 +3,4 @@
 backups/
 qr-*.png
 scripts/informe-proxy-*.txt
+.estado-ip/

@@ -22,6 +22,8 @@ scripts/watchdog.sh         vigila las sesiones y escala la reconexión sola
 scripts/status.sh           estado de los números + IP real de cada proxy
 scripts/backup.sh           copia de bases y de credenciales de sesión
 scripts/add-number.sh       genera el bloque para el número 3, 4, 5...
+scripts/verificar-proxy.sh  las 5 comprobaciones de un proxy 4G, con veredicto
+scripts/vigilar-ip-proxy.sh anota la IP de cada proxy y avisa si CAMBIA DE RED
 docs/ARQUITECTURA.md        por qué este stack y cómo se aísla cada número
 docs/RUNBOOK.md             qué hacer cuando algo se cae (para el equipo)
 docs/PROXIES-Y-CALENTAMIENTO.md  elegir proxy 4G + cómo operar los números
