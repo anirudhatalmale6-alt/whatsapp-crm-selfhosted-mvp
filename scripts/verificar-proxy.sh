@@ -48,6 +48,19 @@ ok()    { log "  ${C_OK}[OK]${C_OFF}    $*" ; }
 mal()   { log "  ${C_MAL}[FALLO]${C_OFF} $*" ; FALLOS=$((FALLOS+1)) ; }
 aviso() { log "  ${C_AVISO}[AVISO]${C_OFF} $*" ; AVISOS=$((AVISOS+1)) ; }
 
+# Con socks5:// curl resuelve el DNS AQUI, en nuestro servidor, y luego le pide
+# al proxy que abra la conexion contra esa IP. Como nuestro servidor esta en
+# Canada, WhatsApp nos devuelve un borde de red cercano a Canada y el proxy
+# brasileno termina yendo a buscarlo lejos: medimos ~0,30s de mas que no son
+# culpa del proxy. socks5h:// deja que resuelva el proxy, que es exactamente lo
+# que hace Evolution (socks-proxy-agent resuelve en remoto por defecto).
+# Medido contra web.whatsapp.com: socks5 1,05s / socks5h 0,76s / http 0,56s.
+# Solo se cambia para MEDIR; el proxy que configura el cliente sigue igual.
+PROXY_MEDIR="$PROXY"
+case "$PROXY" in
+  socks5://*) PROXY_MEDIR="socks5h://${PROXY#socks5://}" ;;
+esac
+
 # el proxy con la contrasena tapada, para poder pegar el informe sin regalarla
 PROXY_SEGURO=$(echo "$PROXY" | sed -E 's#(//[^:]+:)[^@]+@#\1********@#')
 
@@ -71,7 +84,7 @@ fi
 # --------------------------------------------------- 1) responde y que IP da
 log ""
 log "1) El proxy responde y da una IP de salida"
-IP_PROXY=$(curl -4 -s --max-time 30 -x "$PROXY" https://api.ipify.org)
+IP_PROXY=$(curl -4 -s --max-time 30 -x "$PROXY_MEDIR" https://api.ipify.org)
 if [ -z "$IP_PROXY" ]; then
   mal "el proxy NO responde. Revisa host, puerto, protocolo y credenciales."
   log ""
@@ -149,40 +162,91 @@ fi
 # ------------------------------------------------ 3) latencia y acceso WhatsApp
 log ""
 log "3) Latencia y acceso a WhatsApp a traves del proxy"
+[ "$PROXY_MEDIR" != "$PROXY" ] && \
+  log "  (midiendo con socks5h para que resuelva el DNS el proxy, igual que Evolution)"
+
+# Referencia: lo que tarda ESTE servidor sin proxy. La diferencia es el coste
+# real de meter el proxy por medio; el numero suelto no dice nada, porque un
+# servidor en Canada y un movil en Brasil ya estan lejos de por si.
+BASE=$(curl -4 -o /dev/null -s --max-time 30 -w '%{time_appconnect}' https://web.whatsapp.com)
+log "  referencia sin proxy desde este servidor: ${BASE}s"
+
+# MUESTRAS: una sola medicion sobre 4G no vale nada. Midiendo el mismo proxy
+# con 10 min de diferencia salieron 0,76s y 1,25s — la misma linea, sin tocar
+# nada. Con una sola lectura el veredicto sale a cara o cruz. Tomamos varias y
+# nos quedamos con la MEDIANA, que ignora el pico raro; ademas enseñamos el
+# minimo y el maximo, porque en WhatsApp la variacion molesta tanto como la
+# media: lo que corta la sesion es el pico, no el promedio.
+MUESTRAS=${MUESTRAS:-5}
 for DESTINO in https://web.whatsapp.com https://mmg.whatsapp.net; do
-  MED=$(curl -4 -x "$PROXY" -o /dev/null -s --max-time 40 \
-        -w '%{http_code} %{time_appconnect} %{time_total}' "$DESTINO")
-  CODIGO=$(echo "$MED" | awk '{print $1}')
-  # time_appconnect = TLS completado CONTRA EL DESTINO a traves del tunel,
-  # o sea el camino entero. time_connect solo llegaria hasta el proxy.
-  T_CON=$(echo "$MED"  | awk '{print $2}')
-  T_TOT=$(echo "$MED"  | awk '{print $3}')
-  log "  $DESTINO -> HTTP $CODIGO | handshake extremo a extremo ${T_CON}s | total ${T_TOT}s"
+  TIEMPOS=""
+  CODIGO=""
+  FALLIDAS=0
+  for _ in $(seq 1 "$MUESTRAS"); do
+    MED=$(curl -4 -x "$PROXY_MEDIR" -o /dev/null -s --max-time 40 \
+          -w '%{http_code} %{time_appconnect}' "$DESTINO")
+    C=$(echo "$MED" | awk '{print $1}')
+    T=$(echo "$MED" | awk '{print $2}')
+    # time_appconnect = TLS completado CONTRA EL DESTINO a traves del tunel,
+    # o sea el camino entero. time_connect solo llegaria hasta el proxy.
+    if [ "$C" = "000" ] || [ -z "$T" ] || [ "$T" = "0.000000" ]; then
+      FALLIDAS=$((FALLIDAS+1))
+    else
+      TIEMPOS="$TIEMPOS $T"
+      CODIGO="$C"
+    fi
+  done
+
+  if [ -z "$TIEMPOS" ]; then
+    log "  $DESTINO -> sin respuesta en $MUESTRAS intentos"
+    mal "no se pudo conectar a $DESTINO por el proxy"
+    continue
+  fi
+
+  EST=$(echo "$TIEMPOS" | tr ' ' '\n' | grep -v '^$' | sort -n | awk '
+    { v[NR]=$1 }
+    END { m = (NR%2) ? v[(NR+1)/2] : (v[NR/2]+v[NR/2+1])/2
+          printf "%.3f %.3f %.3f", m, v[1], v[NR] }')
+  T_MED=$(echo "$EST" | awk '{print $1}')
+  T_MIN=$(echo "$EST" | awk '{print $2}')
+  T_MAX=$(echo "$EST" | awk '{print $3}')
+  N_OK=$((MUESTRAS-FALLIDAS))
+
+  log "  $DESTINO -> HTTP $CODIGO | mediana ${T_MED}s (min ${T_MIN}s / max ${T_MAX}s, $N_OK de $MUESTRAS)"
 
   case "$CODIGO" in
     # 404 en mmg.whatsapp.net es lo normal: es el CDN de multimedia y no sirve
     # una pagina en la raiz. Lo que importa es que la conexion se establezca.
     200|204|301|302|400|403|404|405)
       ok "WhatsApp responde a traves del proxy (HTTP $CODIGO)" ;;
-    000)
-      mal "no se pudo conectar a $DESTINO por el proxy" ; continue ;;
     *)
       aviso "codigo inesperado $CODIGO en $DESTINO" ;;
   esac
 
-  # umbral de latencia: <0.4 ideal, <0.8 aceptable, >1.5 desconexiones
-  VEREDICTO_LAT=$(awk -v t="$T_CON" 'BEGIN{
+  [ "$FALLIDAS" -gt 0 ] && \
+    aviso "$FALLIDAS de $MUESTRAS intentos se quedaron sin respuesta. Un proxy que falla 1 de cada 5 tira la sesion de WhatsApp cada dos por tres."
+
+  # Umbrales pensados para proxy movil intercontinental, no para fibra: el
+  # servidor esta en Canada y el movil en Brasil, asi que medio segundo es el
+  # suelo fisico. Lo comparamos contra la referencia sin proxy para no culpar
+  # al proveedor de la distancia.
+  VEREDICTO_LAT=$(awk -v t="$T_MED" 'BEGIN{
     if (t=="" || t+0==0)  print "nd";
-    else if (t+0 < 0.4)   print "ideal";
-    else if (t+0 < 0.8)   print "aceptable";
-    else if (t+0 < 1.5)   print "justa";
+    else if (t+0 < 0.8)   print "buena";
+    else if (t+0 < 1.5)   print "aceptable";
+    else if (t+0 < 2.5)   print "justa";
     else                  print "mala" }')
   case "$VEREDICTO_LAT" in
-    ideal|aceptable) ok "latencia $VEREDICTO_LAT (${T_CON}s)" ;;
-    justa)  aviso "latencia justa (${T_CON}s). Funcionara, pero con reconexiones ocasionales." ;;
-    mala)   mal "latencia mala (${T_CON}s). Va a dar desconexiones constantes." ;;
+    buena|aceptable) ok "latencia $VEREDICTO_LAT (mediana ${T_MED}s; sin proxy este servidor tarda ${BASE}s)" ;;
+    justa)  aviso "latencia justa (mediana ${T_MED}s). Funcionara, pero con reconexiones ocasionales." ;;
+    mala)   mal "latencia mala (mediana ${T_MED}s). Va a dar desconexiones constantes." ;;
     nd)     aviso "no pude medir la latencia" ;;
   esac
+
+  # Un pico que triplica la mediana es senal de linea inestable aunque la
+  # mediana salga bien.
+  [ "$(awk -v mx="$T_MAX" -v md="$T_MED" 'BEGIN{print (md+0>0 && mx+0 > 3*md+0)?1:0}')" = "1" ] && \
+    aviso "hay picos muy por encima de lo normal (max ${T_MAX}s frente a mediana ${T_MED}s): la linea va a rachas."
 done
 
 # ---------------------------------------------------- 4) SOCKS5 / HTTP y fugas
@@ -192,7 +256,7 @@ log "4) Coherencia: todo el trafico sale por el mismo sitio"
 # resolvia por IPv6 y devolvia una direccion v6 legitima que el script leia
 # como "la IP esta cambiando" — un falso positivo. curl -4 no sirve aqui:
 # controla MI conexion al proxy, no la que el proxy abre hacia el destino.
-IP_REPETIDA=$(curl -4 -s --max-time 30 -x "$PROXY" https://ipv4.icanhazip.com)
+IP_REPETIDA=$(curl -4 -s --max-time 30 -x "$PROXY_MEDIR" https://ipv4.icanhazip.com)
 IP_REPETIDA=$(echo "$IP_REPETIDA" | tr -d '[:space:]')
 if [ -z "$IP_REPETIDA" ]; then
   aviso "la segunda fuente (icanhazip) no respondio; no es concluyente"
@@ -215,7 +279,7 @@ else
   log "   La IP debe ser SIEMPRE la misma. Cualquier cambio = NO APTO."
   CAMBIOS=0
   for i in $(seq 1 "$VUELTAS"); do
-    AHORA=$(curl -4 -s --max-time 30 -x "$PROXY" https://api.ipify.org | tr -d '[:space:]')
+    AHORA=$(curl -4 -s --max-time 30 -x "$PROXY_MEDIR" https://api.ipify.org | tr -d '[:space:]')
     MARCA=$(date '+%H:%M:%S')
     if [ -z "$AHORA" ]; then
       log "   $MARCA  lectura $i/$VUELTAS: SIN RESPUESTA"
