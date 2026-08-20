@@ -62,12 +62,26 @@ que no poner proxy. Se comprueba en 10 segundos, te explico cómo abajo.
 
 ## Cómo probarlo durante el periodo de prueba
 
-Estas 5 pruebas se hacen en 15 minutos y te ahorran meses de dolor. Si quieres me pasas los datos y
-las corro yo.
+**Lo más fácil: pásame los datos del proveedor y las corro yo.** Están automatizadas en
+`scripts/verificar-proxy.sh`, que da un veredicto **APTO / APTO CON RESERVAS / NO APTO** y guarda un
+informe con la contraseña tapada, para que puedas reenviarlo sin regalar las credenciales:
+
+```bash
+./scripts/verificar-proxy.sh "socks5://USUARIO:CLAVE@HOST:PUERTO" --pais BR --horas 2
+```
+
+Si las quieres hacer a mano, son estas. Ojo a los comentarios: **medir mal hace que un proxy sano
+parezca malo**, y eso ya nos pasó.
 
 ```bash
 # datos del proveedor
 P="http://USUARIO:CLAVE@HOST:PUERTO"
+
+# OJO con SOCKS5: con socks5:// el DNS se resuelve en NUESTRO servidor, así que
+# el proxy acaba conectando contra un servidor de WhatsApp cercano a NOSOTROS y
+# no a él. Eso son ~0,3s de más que NO son culpa del proveedor. Con socks5h://
+# resuelve el proxy, que es lo que hace Evolution de verdad. Para SOCKS usa:
+# P="socks5h://USUARIO:CLAVE@HOST:PUERTO"
 
 # 1) responde y qué IP da
 curl -x "$P" https://api.ipify.org; echo
@@ -77,17 +91,42 @@ curl -x "$P" https://api.ipify.org; echo
 #    o cualquier hosting -> es centro de datos disfrazado, DESCARTAR
 IP=$(curl -sx "$P" https://api.ipify.org)
 curl -s "https://ipinfo.io/$IP/json"
+curl -s "http://ip-api.com/json/$IP?fields=isp,as,mobile,proxy,hosting"  # mobile=true, hosting=false
+
+# 2b) donde esta la PUERTA DE ENLACE del proveedor? Hay quien vende "4G Brasil"
+#     con la entrada en Europa: la IP de salida es brasileña pero el trafico
+#     cruza el oceano dos veces. Debe dar el mismo pais que la salida.
+curl -s "http://ip-api.com/json/$(getent ahostsv4 HOST | head -1 | awk '{print $1}')?fields=country,city,as"
 
 # 3) la IP se mantiene? dejar corriendo 2 horas: TODAS las lineas iguales
 for i in $(seq 1 12); do curl -sx "$P" https://api.ipify.org; echo; sleep 600; done
 
-# 4) latencia hasta WhatsApp. por debajo de 0,4s ideal, hasta 0,8s pasable,
-#    por encima de 1,5s va a dar desconexiones
-curl -x "$P" -o /dev/null -s -w 'conexion: %{time_connect}s  total: %{time_total}s\n' \
-  https://web.whatsapp.com
+# 4) latencia hasta WhatsApp.
+#    - time_appconnect, NO time_connect: time_connect solo mide hasta el proxy.
+#    - UNA sola medicion sobre 4G no vale: el mismo proxy nos dio 0,76s y 1,25s
+#      con 10 minutos de diferencia. Hay que repetir y quedarse con la mediana.
+#    - referencia: mide primero SIN proxy, para no culpar al proveedor de la
+#      distancia (nuestro servidor esta en Canada y el movil en Brasil).
+curl -o /dev/null -s -w 'sin proxy: %{time_appconnect}s\n' https://web.whatsapp.com
+for i in 1 2 3 4 5; do
+  curl -x "$P" -o /dev/null -s -w 'con proxy: %{time_appconnect}s\n' https://web.whatsapp.com
+done
+#    Para movil intercontinental: <0,8s bien, <1,5s aceptable, >2,5s malo.
 
-# 5) WhatsApp no lo tiene ya bloqueado? debe devolver 200
-curl -x "$P" -o /dev/null -s -w '%{http_code}\n' https://web.whatsapp.com
+# 5) WhatsApp no lo tiene ya bloqueado?
+#    web.whatsapp.com debe dar 200. mmg.whatsapp.net da 404 y ESO ESTA BIEN: es
+#    el CDN de multimedia y no sirve pagina en la raiz; lo que importa es que la
+#    conexion se establezca. NO uses g.whatsapp.net: no responde nunca por HTTPS
+#    normal, ni con proxy ni sin el, asi que siempre parece un fallo y no lo es.
+for D in https://web.whatsapp.com https://mmg.whatsapp.net; do
+  curl -x "$P" -o /dev/null -s -w "$D -> %{http_code}\n" "$D"
+done
+
+# 6) fugas: dos servicios independientes deben ver la MISMA IP. Usa servicios
+#    solo-IPv4: con ifconfig.me el proxy puede responder por IPv6 y parece que
+#    la IP esta cambiando cuando no lo esta.
+curl -sx "$P" https://api.ipify.org; echo
+curl -sx "$P" https://ipv4.icanhazip.com
 ```
 
 La prueba 3 es la que más candidatos tumba, y es la que casi nadie hace.
