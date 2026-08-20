@@ -30,6 +30,13 @@ pw_var="${UP}_PROXY_PASSWORD"; P_PASS="${!pw_var:-}"
 BASE="https://${HOST}"
 CURL=(curl -sS --max-time 30 -H "apikey: ${KEY}" -H "Content-Type: application/json")
 
+# Enseña el principio de una respuesta larga SIN usar "| head -c N".
+# Con "set -euo pipefail", head cierra la tuberia en cuanto tiene sus N bytes,
+# curl recibe SIGPIPE, la tuberia devuelve error y el script SE ABORTA ahi
+# mismo. Paso real: la instancia se creo pero ni el proxy ni Chatwoot llegaron
+# a configurarse, y el script termino sin dar un solo error.
+recortar() { printf '%.400s\n' "$(cat)"; }
+
 echo "==> numero ${UP}  |  instancia '${INSTANCE}'  |  ${BASE}"
 
 # ---------------------------------------------------------------- 1. instancia
@@ -38,7 +45,7 @@ exists=$("${CURL[@]}" "${BASE}/instance/fetchInstances" \
 
 if [[ "$exists" == "0" ]]; then
   echo "--> creando instancia"
-  "${CURL[@]}" -X POST "${BASE}/instance/create" -d @- <<JSON | head -c 400; echo
+  "${CURL[@]}" -X POST "${BASE}/instance/create" -d @- <<JSON | recortar
 {
   "instanceName": "${INSTANCE}",
   "integration": "WHATSAPP-BAILEYS",
@@ -60,7 +67,7 @@ fi
 # Ademas lo fijamos a nivel de instancia por si se levanta fuera de compose.
 if [[ -n "$P_HOST" ]]; then
   echo "--> fijando proxy ${P_PROTO}://${P_HOST}:${P_PORT}"
-  "${CURL[@]}" -X POST "${BASE}/proxy/set/${INSTANCE}" -d @- <<JSON | head -c 300; echo
+  "${CURL[@]}" -X POST "${BASE}/proxy/set/${INSTANCE}" -d @- <<JSON | recortar
 {
   "enabled": true,
   "host": "${P_HOST}",
@@ -77,7 +84,7 @@ fi
 # ---------------------------------------------------------------- 3. Chatwoot
 if [[ -n "${CW_ACCOUNT_ID:-}" && -n "${CW_TOKEN:-}" ]]; then
   echo "--> conectando a Chatwoot (bandeja '${INSTANCE}')"
-  "${CURL[@]}" -X POST "${BASE}/chatwoot/set/${INSTANCE}" -d @- <<JSON | head -c 300; echo
+  "${CURL[@]}" -X POST "${BASE}/chatwoot/set/${INSTANCE}" -d @- <<JSON | recortar
 {
   "enabled": true,
   "accountId": "${CW_ACCOUNT_ID}",
