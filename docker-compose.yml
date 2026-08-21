@@ -234,6 +234,40 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
 
+  # ------------------------------------------------------------------ vincular
+  # Pagina con el QR SIEMPRE FRESCO para enganchar un numero.
+  # Mandar el QR como PNG por chat casi nunca funciona: caduca en menos de un
+  # minuto y el cliente se encuentra un codigo muerto. Esta pagina lo repinta
+  # sola y avisa en cuanto el numero queda conectado.
+  # Va colgada del dominio del CRM bajo /vincular/<token>/, y como la regla
+  # lleva PathPrefix es mas larga que la de Chatwoot, asi que Traefik le da
+  # mas prioridad automaticamente y no hace falta tocar la del CRM.
+  vincular:
+    image: python:3.12-alpine
+    restart: unless-stopped
+    command: ["python3", "-u", "/scripts/vincular.py"]
+    environment:
+      VINCULAR_TOKEN: ${VINCULAR_TOKEN}
+      VINCULAR_PORT: 8099
+      N1_API_KEY: ${N1_API_KEY}
+      N1_INSTANCE: ${N1_INSTANCE}
+      N2_API_KEY: ${N2_API_KEY}
+      N2_INSTANCE: ${N2_INSTANCE}
+    volumes:
+      - ./scripts:/scripts:ro
+    networks: [core, edge]   # core = hablar con Evolution / edge = que Traefik llegue
+    depends_on: [evolution-n1, evolution-n2]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=wacrm_edge
+      - traefik.http.routers.vincular.rule=Host(`${CRM_HOST}`) && PathPrefix(`/vincular`)
+      - traefik.http.routers.vincular.entrypoints=websecure
+      - traefik.http.routers.vincular.tls.certresolver=le
+      - traefik.http.services.vincular.loadbalancer.server.port=8099
+
   # ------------------------------------------------------------------ vigilancia
   # Comprueba cada 60s el estado de cada numero. Si uno cae:
   #   1) intenta /instance/restart   2) reinicia SOLO ese contenedor
