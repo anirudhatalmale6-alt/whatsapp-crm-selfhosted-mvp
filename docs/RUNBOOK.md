@@ -1,7 +1,10 @@
 # Runbook — qué hacer cuando algo falla
 
-Pensado para que lo siga cualquiera del equipo técnico, sin llamarme.
+Pensado para que lo siga cualquiera con acceso al servidor, sin llamarme.
 Regla de oro: **todo se arregla por número. Nunca hay que parar la plataforma entera.**
+
+Servidor: `ssh anirudha@158.69.198.181` · todo vive en `/opt/wacrm`
+CRM: https://crm.estaciondemusculacion.com
 
 ---
 
@@ -12,133 +15,253 @@ cd /opt/wacrm
 make status
 ```
 
-Salida de un sistema sano:
-
-```
- NUMEROS
-  N1  ventas1      -> open
-  N2  ventas2      -> open
- PROXIES 4G
-  VPS      : 203.0.113.10
-  N1       : 100.64.11.7    (proxy1.proveedor.com:9001)
-  N2       : 100.64.44.2    (proxy2.proveedor.com:9002)
-```
-
-Las tres IP tienen que ser **distintas entre sí**. Si un número sale por la IP del VPS, el proxy no
-está aplicando: ver caso D.
+Salida de un sistema sano: los dos números en `open` y **tres IP distintas**
+(el VPS y un 4G por número). Si un número sale por la IP del VPS, su proxy no
+está aplicando: ver **caso D**.
 
 ---
 
-## Caso A — un número aparece `close` o `connecting`
+## Caso A — un número aparece `connecting`
 
-El vigilante ya lo está intentando solo. Dale 2–3 minutos y vuelve a `make status`.
+**`connecting` NO es una caída.** Es el estado normal mientras el motor negocia
+con WhatsApp. Tarda segundos, y tras un reinicio puede tardar un poco más.
 
-Si sigue caído:
+**No hagas nada durante los primeros minutos.** El vigilante tampoco: le da 5
+comprobaciones de margen antes de considerarlo atascado.
 
-```bash
-make logs-n1              # ¿qué dice? (Ctrl-C para salir)
-make restart-n1           # reinicio solo de ese número
-```
-
-El otro número **no se toca y sigue atendiendo**. Si tras el reinicio vuelve a `open`, listo: no
-hace falta QR.
-
----
-
-## Caso B — sigue caído después de reiniciar → hace falta QR
-
-WhatsApp ha cerrado la sesión desde su lado (bloqueo, cierre manual desde el móvil, o el teléfono
-más de 14 días apagado).
-
-```bash
-make qr1                  # genera qr-n1.png
-```
-
-Abrir `qr-n1.png` y escanear desde el móvil de esa línea:
-**WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo**.
-
-El QR caduca en ~40 s; si expira, `make qr1` otra vez. Confirmar con `make status`.
-
-> Mientras tanto el otro número no se entera en ningún momento.
+> ⚠️ **Nunca lances `/instance/restart` sobre una instancia en `connecting`.**
+> Aborta el saludo a medias, el motor abre otro socket sin que muera el
+> anterior, y WhatsApp expulsa a uno de los dos con `conflict: replaced`.
+> El que queda reintenta, y se entra en una tormenta que se retroalimenta.
+> Esto tumbó el número 2 durante una hora el 24-Ago-2026 — y lo provocó el
+> propio vigilante, que trataba `connecting` como caída. Ya está corregido,
+> pero la trampa sigue ahí si alguien reinicia a mano.
 
 ---
 
-## Caso C — el CRM no carga (crm.dominio.com)
+## Caso A2 — tormenta de `conflict: replaced`
+
+**Cómo se reconoce:**
 
 ```bash
-docker compose ps                       # ¿chatwoot y chatwoot-worker "Up"?
-docker compose logs --tail=100 chatwoot
-docker compose restart chatwoot chatwoot-worker
+docker logs --since 10m wacrm-evolution-n2 2>&1 | grep -c replaced
 ```
 
-Los números **siguen conectados** aunque Chatwoot esté caído: Evolution reintenta los webhooks y
-los mensajes entran cuando el CRM vuelve. No hay pérdida.
+Sano: `0`, o algún evento suelto. En tormenta: **decenas por minuto** (llegó a 70).
+Otra señal: en los logs aparece `Browser: CRM Comercial` una y otra vez cada
+medio segundo — son sockets nuevos abriéndose sin parar.
+
+**Cómo se arregla:**
+
+```bash
+docker restart wacrm-evolution-n2      # SOLO el contenedor del número afectado
+```
+
+El reinicio del contenedor es lo único que se lleva por delante los sockets
+huérfanos. Un `/instance/restart` **empeora** la situación.
+
+Después: **no lo toques durante 10 minutos.** Si algo lo vuelve a reiniciar
+enseguida, la tormenta vuelve.
+
+---
+
+## Caso B — un número aparece `close` y no vuelve
+
+El vigilante ya escala solo: reconexión suave → reinicio del contenedor → aviso.
+Dale unos minutos y mira Telegram.
+
+Si el aviso dice **`se ha cerrado la sesion desde el movil`**, no hay nada que
+reiniciar: alguien quitó el dispositivo vinculado, o el teléfono lleva ~14 días
+sin abrir WhatsApp. Hace falta **QR nuevo**, por definición del protocolo.
+
+Comprobar el motivo real:
+
+```bash
+K=$(grep ^N1_API_KEY /opt/wacrm/.env | cut -d= -f2)
+docker exec wacrm-evolution-n1 sh -c \
+  "wget -qO- --header=\"apikey: $K\" http://localhost:8080/instance/fetchInstances?instanceName=ventas1"
+```
+
+- `disconnectionReasonCode: 401` + `device_removed` → sesión cerrada desde el móvil.
+- `conflict / replaced` → caso A2.
+
+> ⚠️ Esos campos son **históricos**: siguen ahí después de reconectar. Lo que
+> distingue un cierre nuevo de uno viejo es la fecha (`disconnectionAt`), no su
+> mera presencia.
+
+---
+
+## Caso C — volver a vincular un número (QR)
+
+Se hace por la página, no por fichero PNG (un PNG por chat caduca antes de que
+lo abran):
+
+```
+https://crm.estaciondemusculacion.com/vincular/<VINCULAR_TOKEN>/n1
+https://crm.estaciondemusculacion.com/vincular/<VINCULAR_TOKEN>/n2
+```
+
+El token está en `/opt/wacrm/.env` (`VINCULAR_TOKEN`). La página refresca el
+código sola y detecta la conexión.
+
+**Quien abra esa URL puede enganchar su WhatsApp a la bandeja del cliente.** No
+se publica ni se reenvía.
 
 ---
 
 ## Caso D — un número sale por la IP del VPS en vez de por su 4G
 
-1. Comprobar el proxy directamente:
+1. Comprobar el proxy directamente (usar los datos de `.env`):
    ```bash
-   curl -x http://USUARIO:CLAVE@HOST:PUERTO https://api.ipify.org
+   curl -s --socks5-hostname "USUARIO:CLAVE@HOST:PUERTO" https://api.ipify.org
    ```
    - No responde → problema del proveedor del proxy, no del servidor.
-   - Responde con la IP 4G → seguir.
+   - Responde con una IP 4G → seguir.
 2. Revisar que `N1_PROXY_*` en `.env` están completos y sin espacios sobrantes.
 3. Aplicar y reconectar:
    ```bash
-   docker compose up -d evolution-n1     # recarga variables
+   docker compose up -d evolution-n1
    ./scripts/provision.sh n1
    make status
    ```
 
-**Importante:** si el proxy de un número cambia de IP, no cambies la del otro a la vez. Un número,
-un cambio, verificar, siguiente.
+**Un número, un cambio, verificar, siguiente.** Nunca los dos a la vez.
+
+> Comprobar un proxy con `curl` NO demuestra que el número salga por él: el
+> proxy se aplica dentro del socket de Baileys. La prueba de verdad es mirar
+> los destinos TCP establecidos del contenedor:
+> ```bash
+> docker exec wacrm-evolution-n1 sh -c "cat /proc/net/tcp /proc/net/tcp6" | awk '$4=="01"'
+> ```
+
+> Que la IP de un proxy 4G **cambie dentro de la misma red del operador es
+> normal** y no se avisa a propósito. Lo que sí importa es que cambie de red.
 
 ---
 
-## Caso E — el número está `open` pero no entran mensajes en el CRM
+## Caso E — el CRM no carga
+
+```bash
+docker compose ps
+docker compose logs --tail=100 chatwoot
+docker compose restart chatwoot chatwoot-worker
+```
+
+Los números **siguen conectados** aunque Chatwoot esté caído: Evolution
+reintenta los webhooks y los mensajes entran cuando el CRM vuelve.
+
+---
+
+## Caso F — el número está `open` pero no entran mensajes
 
 Es la integración con Chatwoot, no la sesión.
 
 ```bash
-curl -H "apikey: $N1_API_KEY" https://wa1.tudominio.com/chatwoot/find/ventas1
+K=$(grep ^N1_API_KEY /opt/wacrm/.env | cut -d= -f2)
+docker exec wacrm-evolution-n1 sh -c \
+  "wget -qO- --header=\"apikey: $K\" http://localhost:8080/chatwoot/find/ventas1"
 ```
 
-Si sale `enabled: false` o vacío, reaplicar:
-
-```bash
-./scripts/provision.sh n1
-```
-
-Comprobar también que en Chatwoot existe la bandeja con ese nombre y que los agentes están
-asignados a ella (Ajustes → Bandejas de entrada → Agentes).
+Si sale `enabled: false` o vacío → `./scripts/provision.sh n1`.
 
 ---
 
-## Caso F — WhatsApp ha bloqueado un número
+## Caso G — restaurar una copia de seguridad
 
-No hay truco técnico que lo revierta. Procedimiento:
+Las copias están en `/opt/wacrm/backups`, se hacen **cada noche a las 03:00** y
+se guardan 14 días.
 
-1. Pedir revisión desde la app del número afectado (a veces se levanta en 24–48 h).
-2. **No** reciclar el proxy de ese número para una línea nueva: quema también la nueva.
-3. Dar de alta la línea de repuesto con su propio proxy:
-   ```bash
-   ./scripts/add-number.sh 3 wa3.tudominio.com ventas3
-   ```
-4. Revisar qué se estaba enviando desde esa línea antes del bloqueo. El bloqueo casi siempre es
-   consecuencia del envío, no de la infraestructura (ver `ARQUITECTURA.md`, punto 5).
+> ⚠️ **Lo más importante:** las credenciales de sesión de WhatsApp viven en la
+> tabla `Session` de cada base `evolution_nX`, **no en el volumen** (el volumen
+> ocupa 8 KB y no sirve de nada). Por eso lo que evita tener que reescanear los
+> dos QR es el volcado de PostgreSQL.
 
----
-
-## Caso G — el servidor se ha reiniciado
-
-Todo arranca solo (`restart: unless-stopped`) y las sesiones se recuperan de la base de datos
-**sin QR**. Sólo confirmar:
+**Antes de restaurar nada, comprobar que la copia sirve** (esto no toca
+producción, restaura en una base temporal y la borra):
 
 ```bash
+/opt/wacrm/scripts/probar-restauracion.sh
+```
+
+Se ejecuta solo cada lunes a las 04:00. Salida sana: cada tabla con sus filas y
+`sesion de WhatsApp presente (NNNN bytes)`.
+
+**Restaurar de verdad** (esto SÍ destruye los datos actuales de esa base):
+
+```bash
+cd /opt/wacrm
+docker compose stop evolution-n1 chatwoot chatwoot-worker   # parar quien escribe
+
+. ./.env
+COPIA=$(ls -1t backups/evolution_n1-*.sql.gz | head -1)     # la más reciente
+echo "voy a restaurar: $COPIA"                              # MIRARLO antes de seguir
+
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" wacrm-postgres-1 \
+  psql -U "$POSTGRES_USER" -d postgres -c \
+  'DROP DATABASE "evolution_n1"; CREATE DATABASE "evolution_n1";'
+
+zcat "$COPIA" | docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" wacrm-postgres-1 \
+  psql -U "$POSTGRES_USER" -d evolution_n1
+
+docker compose start evolution-n1 chatwoot chatwoot-worker
 make status
 ```
+
+La configuración (`.env`, `.env.chatwoot`, `docker-compose.yml`) está en
+`backups/config-*.tar.gz`. **Lleva todas las claves dentro**: tratarlo como un
+fichero de contraseñas.
+
+---
+
+## Caso H — WhatsApp ha bloqueado un número
+
+No hay truco técnico que lo revierta.
+
+1. Pedir revisión desde la app del número afectado.
+2. **No** reciclar el proxy de ese número para una línea nueva: quema también la nueva.
+3. Dar de alta la línea de repuesto con su propio proxy:
+   `./scripts/add-number.sh 3 wa3.dominio.com ventas3`
+4. Revisar qué se enviaba desde esa línea. El bloqueo casi siempre viene del
+   envío, no de la infraestructura.
+
+---
+
+## Caso I — el servidor se ha reiniciado
+
+Todo arranca solo (`restart: unless-stopped`) y las sesiones se recuperan de la
+base de datos **sin QR**. Confirmar con `make status`.
+
+---
+
+## El vigilante: qué hace y cómo se ajusta
+
+`scripts/watchdog.sh`, cada 60 s por número:
+
+| Estado | Qué hace |
+|---|---|
+| `open` | nada, y limpia los contadores |
+| `connecting` (< 5 veces seguidas) | **nada**, es normal |
+| `connecting` (≥ 5 veces) y el número ya estaba vinculado | reinicia **el contenedor** (nunca la instancia) |
+| `connecting` y el número **nunca** se vinculó | nada: está esperando a que alguien escanee el QR |
+| `close` | reconexión suave ×2 → reinicio de contenedor ×2 → aviso URGENTE |
+| sesión cerrada desde el móvil | **no reinicia nada**, avisa una sola vez por cierre |
+
+Ajustes por variable de entorno:
+
+- `WATCH_INTERVAL` (60) — cada cuánto comprueba
+- `WATCH_GRACIA_CONNECTING` (5) — margen antes de tocar un `connecting`
+- `WATCH_ENFRIAMIENTO` (600) — **mínimo entre dos reinicios del mismo número**
+
+> El enfriamiento es lo que impide que un fallo persistente convierta al
+> vigilante en una máquina de reiniciar. No lo bajes.
+
+Para comprobar que la lógica sigue siendo correcta tras tocarla, sin servidor:
+
+```bash
+./scripts/probar-watchdog.sh scripts/watchdog.sh
+```
+
+15 comprobaciones sobre 8 escenarios. Tiene que decir `VEREDICTO: todo correcto`.
 
 ---
 
@@ -146,7 +269,13 @@ make status
 
 | Cuándo | Qué |
 |---|---|
-| Diario 03:00 (cron) | `./scripts/backup.sh` |
-| Semanal | `make status` y ojo a la RAM (`docker stats --no-stream`) |
-| Mensual | `docker compose pull && docker compose up -d` — **un servicio cada vez**, verificando entre uno y otro |
-| Antes de actualizar | `./scripts/backup.sh`. Y fijar siempre versión concreta, nunca `:latest` |
+| Diario 03:00 (cron) | `backup.sh` — copia de las 3 bases + volúmenes + config |
+| Lunes 04:00 (cron) | `probar-restauracion.sh` — comprueba que las copias sirven |
+| Cada 15 min (cron) | `vigilar-ip-proxy.sh` — avisa si un proxy cambia de red |
+| Semanal | `make status`; que alguien abra WhatsApp en los dos móviles |
+| Mensual | `docker compose pull && docker compose up -d` — **un servicio cada vez** |
+| Antes de actualizar | `./scripts/backup.sh`. Fijar versión concreta, nunca `:latest` |
+
+Los avisos van a Telegram (`ALERT_TELEGRAM_TOKEN` / `ALERT_TELEGRAM_CHAT_ID`
+en `.env`). Telegram **no** es un webhook genérico: sin `chat_id` la API
+responde 400 y el aviso se pierde en silencio.
