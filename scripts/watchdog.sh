@@ -8,6 +8,13 @@
 #     fallo 3   -> docker restart wacrm-evolution-nX
 #     fallo 5   -> avisa al webhook: hace falta reescanear el QR
 #  Cuando vuelve a "open" avisa de la recuperacion y resetea el contador.
+#
+#  CASO APARTE: la sesion cerrada A PROPOSITO (logout).
+#  Si desde el movil se quita el dispositivo vinculado, WhatsApp cierra la
+#  sesion con un stream:error 401 / conflict device_removed. Eso NO se arregla
+#  reconectando ni reiniciando: hace falta un QR nuevo, por definicion del
+#  protocolo. Ahi la escalada de arriba solo gasta minutos, asi que la saltamos
+#  y avisamos de inmediato.
 # =============================================================================
 INTERVAL="${WATCH_INTERVAL:-60}"
 STATE_DIR=/state
@@ -22,9 +29,27 @@ notify() {
        "$ALERT_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
 
+# Devuelve la marca de tiempo del ultimo cierre de sesion DELIBERADO, o vacio.
+#
+# Evolution guarda el motivo de la ultima desconexion en la ficha de la
+# instancia. Ojo: esos campos son historicos, siguen ahi despues de reconectar,
+# asi que NO basta con encontrarlos. Lo que identifica un logout nuevo es su
+# fecha (disconnectionAt), que por eso devolvemos para poder compararla.
+logout_de() {
+  ficha=$(wget -qO- --header="apikey: $2" --timeout=15 \
+          "http://$1:8080/instance/fetchInstances?instanceName=$3" 2>/dev/null)
+  case "$ficha" in
+    *device_removed*|*'"disconnectionReasonCode":401'*|*loggedOut*) ;;
+    *) return 0 ;;
+  esac
+  # "disconnectionAt":"2026-08-24T13:21:55.677Z"  ->  2026-08-24T13:21:55.677Z
+  echo "$ficha" | sed -n 's/.*"disconnectionAt":"\([^"]*\)".*/\1/p'
+}
+
 check() {
   n="$1"; container="$2"; instance="$3"; key="$4"
   f="$STATE_DIR/$n.fails"
+  fl="$STATE_DIR/$n.logout"
   fails=$(cat "$f" 2>/dev/null || echo 0)
 
   state=$(wget -qO- --header="apikey: $key" --timeout=15 \
@@ -34,6 +59,7 @@ check() {
     *'"state":"open"'*)
       [ "$fails" -gt 0 ] && notify "OK: el numero $n ($instance) volvio a estar conectado"
       echo 0 > "$f"
+      rm -f "$fl"
       return 0 ;;
   esac
 
@@ -47,6 +73,21 @@ check() {
       echo 0 > "$f"
       return 0
     fi
+  fi
+
+  # Sesion cerrada a proposito desde el movil: reiniciar no puede arreglarlo.
+  # Avisamos una sola vez por cada logout (los distinguimos por su fecha) y
+  # dejamos de tocar el motor hasta que alguien reescanee.
+  cerrada=$(logout_de "$container" "$key" "$instance")
+  if [ -n "$cerrada" ]; then
+    if [ "$cerrada" != "$(cat "$fl" 2>/dev/null)" ]; then
+      echo "$cerrada" > "$fl"
+      echo 0 > "$f"
+      notify "URGENTE: se ha cerrado la sesion del numero $n ($instance) desde el movil (dispositivo vinculado eliminado, $cerrada). Reiniciar NO lo arregla: hay que volver a escanear el QR en la pagina de vinculacion. El otro numero sigue operativo."
+    else
+      echo "[watchdog] $n: sesion cerrada desde el movil ($cerrada), esperando a que se reescanee el QR. No reinicio nada."
+    fi
+    return 0
   fi
 
   fails=$((fails + 1)); echo "$fails" > "$f"
