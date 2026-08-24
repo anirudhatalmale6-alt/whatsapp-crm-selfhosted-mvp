@@ -283,6 +283,8 @@ services:
       N1_INSTANCE: ${N1_INSTANCE}
       N2_INSTANCE: ${N2_INSTANCE}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL}
+      ALERT_TELEGRAM_TOKEN: ${ALERT_TELEGRAM_TOKEN}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID}
       COMPOSE_PROJECT: wacrm
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

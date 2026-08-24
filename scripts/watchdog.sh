@@ -22,8 +22,20 @@ mkdir -p "$STATE_DIR"
 
 notify() {
   echo "[watchdog] $1"
+  # Escapamos para JSON: primero las barras, luego las comillas, y las
+  # nuevas lineas fuera (el aviso va en una sola linea).
+  esc=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+
+  # Telegram no es un webhook generico: ademas del texto hay que decirle a QUE
+  # chat va. Sin chat_id la API responde 400 y el aviso se pierde en silencio.
+  if [ -n "$ALERT_TELEGRAM_TOKEN" ] && [ -n "$ALERT_TELEGRAM_CHAT_ID" ]; then
+    wget -qO- --header='Content-Type: application/json' \
+         --post-data="{\"chat_id\":\"$ALERT_TELEGRAM_CHAT_ID\",\"text\":\"$esc\",\"disable_web_page_preview\":true}" \
+         "https://api.telegram.org/bot$ALERT_TELEGRAM_TOKEN/sendMessage" >/dev/null 2>&1 || true
+  fi
+
+  # Webhook generico (Slack, Discord, n8n...). Se pueden usar los dos a la vez.
   [ -z "$ALERT_WEBHOOK_URL" ] && return 0
-  esc=$(printf '%s' "$1" | sed 's/"/\\"/g')
   wget -qO- --header='Content-Type: application/json' \
        --post-data="{\"text\":\"$esc\",\"content\":\"$esc\",\"message\":\"$esc\"}" \
        "$ALERT_WEBHOOK_URL" >/dev/null 2>&1 || true
