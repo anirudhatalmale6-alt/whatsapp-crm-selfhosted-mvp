@@ -58,6 +58,16 @@ def estado_de(num):
 
 def qr_de(num):
     """PNG del QR actual, o None si ya no hay QR que ensenar."""
+    # ⚠️ /instance/connect NO es una consulta inocente: no "mira si hay QR",
+    # le PIDE al motor que abra conexion. Si el numero ya esta vinculado y
+    # con su socket abierto, esta llamada puede dejar DOS sockets sobre la
+    # misma sesion; WhatsApp expulsa a uno con "conflict: replaced", el que
+    # queda reintenta, y se entra en un bucle que tumba el numero.
+    # La pagina refresca el QR cada 12 segundos, o sea que dejarla abierta
+    # sobre un numero ya conectado seria pegarle 5 veces por minuto.
+    # Por eso: si esta conectado, no se llama y ya esta.
+    if estado_de(num) == "open":
+        return None
     try:
         d = evolution(num, "/instance/connect/{i}")
     except urllib.error.HTTPError:
@@ -106,21 +116,68 @@ PAGINA = """<!doctype html><html lang="es"><head>
 </div>
 <script>
  var base = location.pathname.replace(/\\/$/, '');
+ var hayQR = false;   // ¿hay de verdad un codigo pintado en pantalla?
+ // Cuando no hay QR el servidor responde 204 (sin contenido) y el navegador
+ // pinta el icono de imagen rota. Eso es lo que hacia parecer que la pagina
+ // estaba estropeada cuando en realidad el numero ya estaba vinculado.
+ // Aqui se sustituye el hueco por una explicacion en texto.
+ // Se esconde la ZONA entera, no solo el marco: dentro estan tambien los
+ // pasos ("apunta la camara a este codigo") y dejarlos a la vista cuando no
+ // hay ningun codigo es peor que la imagen rota, porque manda al usuario a
+ // hacer algo que no puede hacer.
+ function ocultarQR(mensaje){
+   var zona = document.getElementById('zona');
+   if (zona) zona.style.display = 'none';
+   document.getElementById('estado').textContent = mensaje;
+ }
+ function mostrarQR(){
+   var zona = document.getElementById('zona');
+   if (zona) zona.style.display = '';
+ }
  function pintarQR(){
-   document.getElementById('qr').src = base + '/qr.png?t=' + Date.now();
+   var img = document.getElementById('qr');
+   // Si mas tarde SI aparece un QR (por ejemplo tras cerrar sesion en el
+   // movil), hay que volver a ensenar el marco que se oculto antes.
+   img.onload = function(){
+     hayQR = true;
+     mostrarQR();
+     document.getElementById('estado').textContent =
+       'Esperando a que escanees el c\\u00f3digo\\u2026';
+   };
+   img.onerror = function(){
+     hayQR = false;
+     ocultarQR('Ahora mismo no hay c\\u00f3digo que escanear. ' +
+               'Lo normal es que este n\\u00famero ya est\\u00e9 vinculado.');
+   };
+   img.src = base + '/qr.png?t=' + Date.now();
  }
  function mirarEstado(){
    fetch(base + '/estado').then(function(r){ return r.json(); }).then(function(d){
      if (d.estado === 'open'){
+       // Sin esto, si la zona se habia ocultado antes por no haber QR, el
+       // aviso de "conectado correctamente" se escribiria DENTRO de un
+       // contenedor invisible y el usuario no veria nada.
+       mostrarQR();
        document.getElementById('zona').innerHTML =
          '<div class="ok">&#10003; N&uacute;mero conectado correctamente.<br>' +
          'Ya puedes cerrar esta p&aacute;gina.</div>';
        document.getElementById('estado').textContent = '';
        clearInterval(tQR); clearInterval(tEst);
-     } else {
+     } else if (d.estado === 'connecting'){
+       // Ni conectado ni con QR: esta negociando. Antes aqui se quedaba el
+       // hueco de la imagen rota y ponia "esperando a que escanees", que es
+       // justo lo contrario de lo que hay que hacer.
+       ocultarQR('Este n\\u00famero est\\u00e1 reconect\\u00e1ndose solo. ' +
+                 'No hace falta escanear nada: espera un momento.');
+     } else if (hayQR){
        // textContent, asi que aqui van caracteres de verdad y NO entidades HTML
        document.getElementById('estado').textContent =
          'Esperando a que escanees el c\\u00f3digo\\u2026';
+     } else {
+       // Sin QR en pantalla no se puede pedir que lo escanee: seria mandarle
+       // a buscar algo que no esta.
+       ocultarQR('Preparando el c\\u00f3digo\\u2026 Si no aparece en unos ' +
+                 'segundos, lo normal es que este n\\u00famero ya est\\u00e9 vinculado.');
      }
    }).catch(function(){});
  }
