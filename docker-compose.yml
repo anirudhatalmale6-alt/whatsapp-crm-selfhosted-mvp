@@ -48,7 +48,15 @@ x-evolution-env: &evolution-env
   CHATWOOT_ENABLED: "true"
   CHATWOOT_MESSAGE_READ: "true"
   CHATWOOT_MESSAGE_DELETE: "true"
-  CHATWOOT_BOT_CONTACT: "true"
+  # Con "true", Evolution se inventa un contacto (+123456, "prueba") y le abre
+  # una conversacion en Chatwoot donde va dejando los QR y los avisos de
+  # conexion: ~20 mensajes de basura en la bandeja cada vez que se genera un QR.
+  # Aqui no hace falta, porque los QR se sirven en la pagina de vinculacion y
+  # los avisos van por Telegram. OJO con la variable: Evolution la evalua como
+  #   !env || env === "true"
+  # o sea que solo esta ACTIVADA si no existe o si vale exactamente "true".
+  # Cualquier otro valor la desactiva, incluido "TRUE" en mayusculas.
+  CHATWOOT_BOT_CONTACT: ${CHATWOOT_BOT_CONTACT:-false}
   CHATWOOT_IMPORT_PLACEHOLDER_MEDIA_MESSAGE: "true"
 
   CONFIG_SESSION_PHONE_CLIENT: ${SESSION_PHONE_CLIENT:-Evolution API}
