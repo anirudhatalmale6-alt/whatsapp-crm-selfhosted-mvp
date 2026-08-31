@@ -138,11 +138,26 @@ check() {
         return 0
       fi
       echo "[watchdog] $n: lleva $seguidas comprobaciones atascado en 'connecting'."
-      # OJO: un numero que AUN NO se ha vinculado nunca tambien se pasa la vida
-      # en "connecting": esta esperando a que una persona escanee el QR, y eso
-      # puede tardar lo que tarde. Reiniciarle el motor cada pocos minutos seria
-      # tumbarle el codigo justo mientras lo esta escaneando.
-      # Se distinguen por el ownerJid: solo lo tiene un numero ya vinculado.
+      # 🚨 UN NUMERO QUE ESPERA UN ESCANEO TAMBIEN VIVE EN "connecting".
+      # Reiniciarle el motor le invalida el codigo justo mientras una persona
+      # lo esta enfocando con la camara. Hay DOS formas de estar esperando:
+      #
+      #   a) nunca se ha vinculado          -> no tiene ownerJid
+      #   b) se cerro la sesion desde el     -> SI tiene ownerJid, asi que la
+      #      movil y aun no se ha               comprobacion de (a) NO lo pilla
+      #      reescaneado
+      #
+      # El caso (b) es el que fallaba: el 31-Ago-2026 el vigilante reinicio el
+      # motor del numero 1 mientras el cliente intentaba reescanear, y el codigo
+      # dejaba de valer en sus manos sin explicacion. Se reconoce por el fichero
+      # de logout, que se escribe al detectar el cierre y SOLO se borra cuando
+      # el numero vuelve a estar "open". Si sigue puesto, seguimos esperando.
+      if [ -f "$fl" ]; then
+        echo "[watchdog] $n: esperando a que alguien reescanee el QR (sesion cerrada el $(cat "$fl")). Reiniciar le tumbaria el codigo. No lo toco."
+        return 0
+      fi
+      # Caso (a): se distingue por el ownerJid, que solo tiene un numero ya
+      # vinculado alguna vez.
       if ! wget -qO- --header="apikey: $key" --timeout=15 \
              "http://$container:8080/instance/fetchInstances?instanceName=$instance" 2>/dev/null \
            | grep -q '"ownerJid":"[^"]'; then

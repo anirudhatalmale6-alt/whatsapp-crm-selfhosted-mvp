@@ -101,6 +101,33 @@ resultado "restart suave" "$(cuenta RESTART_SUAVE)" 0
 resultado "restart contenedor" "$(cuenta RESTART_CONTENEDOR)" 0
 resultado "avisos de Telegram (uno solo)" "$(cuenta TELEGRAM)" 1
 
+echo "=== 7. tras un logout, el numero pasa a 'connecting' esperando el escaneo:"
+echo "       NO se le puede reiniciar o se le tumba el QR en las manos ==="
+# El fallo real del 31-Ago-2026. Secuencia exacta: se cierra la sesion desde el
+# movil (close + 401), alguien abre la pagina de vinculacion, eso pide un QR y
+# la instancia pasa a "connecting"... y ahi el vigilante la daba por atascada.
+# Ojo: este numero SI tiene ownerJid, por eso la comprobacion de "sin vincular"
+# no lo protegia. El codigo viejo reinicia aqui; el nuevo no.
+: > "$ACCIONES"; rm -f "$STATE_DIR"/*
+echo '{"ownerJid":"554197551818@s.whatsapp.net","disconnectionReasonCode":401,"disconnectionObject":{"error":"device_removed"},"disconnectionAt":"2026-08-31T16:04:34.353Z"}' > "$FICHA_FALSA"
+ENFRIAMIENTO=0 correr close 3          # se detecta el logout
+: > "$ACCIONES"
+ENFRIAMIENTO=0 correr connecting 8     # la pagina pide el QR
+resultado "restart suave" "$(cuenta RESTART_SUAVE)" 0
+resultado "restart contenedor mientras espera el escaneo" "$(cuenta RESTART_CONTENEDOR)" 0
+
+echo "=== 7b. CONTROL: una vez reconectado, un 'connecting' atascado SI se reinicia ==="
+# Sin este control, la comprobacion 7 se aprobaria tambien dejando al vigilante
+# inerte para siempre. Ademas prueba que los campos 401 de la ficha, que son
+# HISTORICOS y no se borran al reconectar, no lo bloquean de por vida.
+: > "$ACCIONES"; rm -f "$STATE_DIR"/*
+ENFRIAMIENTO=0 correr close 3
+correr open 1                          # vuelve a estar conectado
+: > "$ACCIONES"
+ENFRIAMIENTO=0 correr connecting 8
+resultado "restart contenedor" "$(cuenta RESTART_CONTENEDOR)" 1
+echo '{}' > "$FICHA_FALSA"
+
 echo
 [ "$FALLOS" -eq 0 ] && echo "VEREDICTO: todo correcto" || echo "VEREDICTO: $FALLOS comprobaciones MAL"
 rm -rf "$BANCO"

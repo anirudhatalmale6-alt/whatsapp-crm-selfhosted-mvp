@@ -311,8 +311,19 @@ base de datos **sin QR**. Confirmar con `make status`.
 |---|---|
 | `open` | nada, y limpia los contadores |
 | `connecting` (< 5 veces seguidas) | **nada**, es normal |
-| `connecting` (≥ 5 veces) y el número ya estaba vinculado | reinicia **el contenedor** (nunca la instancia) |
+| `connecting` (≥ 5 veces) y el número ya estaba vinculado **y no hay un logout pendiente** | reinicia **el contenedor** (nunca la instancia) |
 | `connecting` y el número **nunca** se vinculó | nada: está esperando a que alguien escanee el QR |
+| `connecting` **con un logout pendiente** (se cerró la sesión y aún no se ha reescaneado) | **nada**: está esperando el escaneo, y reiniciar invalidaría el QR en las manos de quien lo escanea |
+
+> ⚠️ Esa última fila costó un rato el 31-Ago-2026. Al abrir la página de
+> vinculación de un número deslogueado, la página pide un QR y la instancia pasa
+> de `close` a **`connecting`** — y el vigilante la daba por atascada y le
+> reiniciaba el contenedor, invalidando el código justo mientras el cliente lo
+> enfocaba con la cámara. Desde fuera parece que "el QR no funciona".
+> La comprobación que ya existía (`ownerJid` vacío = nunca vinculado) **no cubre
+> este caso**, porque un número deslogueado conserva su `ownerJid`. Lo que lo
+> distingue es el fichero `/state/nX.logout`, que se escribe al detectar el
+> cierre y sólo se borra cuando el número vuelve a estar `open`.
 | `close` | reconexión suave ×2 → reinicio de contenedor ×2 → aviso URGENTE |
 | sesión cerrada desde el móvil | **no reinicia nada**, avisa una sola vez por cierre |
 
@@ -331,7 +342,7 @@ Para comprobar que la lógica sigue siendo correcta tras tocarla, sin servidor:
 ./scripts/probar-watchdog.sh scripts/watchdog.sh
 ```
 
-15 comprobaciones sobre 8 escenarios. Tiene que decir `VEREDICTO: todo correcto`.
+19 comprobaciones sobre 10 escenarios. Tiene que decir `VEREDICTO: todo correcto`.
 
 ---
 
