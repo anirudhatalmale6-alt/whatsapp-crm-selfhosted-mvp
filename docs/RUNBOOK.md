@@ -342,7 +342,25 @@ Para comprobar que la lógica sigue siendo correcta tras tocarla, sin servidor:
 | Diario 03:00 (cron) | `backup.sh` — copia de las 3 bases + volúmenes + config |
 | Lunes 04:00 (cron) | `probar-restauracion.sh` — comprueba que las copias sirven |
 | Cada 15 min (cron) | `vigilar-ip-proxy.sh` — avisa si un proxy cambia de red |
-| Cada 2 min (cron) | `reconciliar-lid.py --cron` — mantiene las direcciones de envío al día (caso F2). Sólo escribe en `/var/log/wacrm-lid.log` cuando cambia algo |
+| Cada 2 min (cron) | `reconciliar-lid.py --cron` — mantiene las direcciones de envío al día (caso F2). Sólo escribe en `/opt/wacrm/logs/reconciliar-lid.log` cuando cambia algo |
+
+> ⚠️ Ese log va a `/opt/wacrm/logs/`, **no a `/var/log/`**, a propósito: el
+> usuario `anirudha` no puede crear ficheros en `/var/log`, y cuando cron no
+> puede abrir el destino de un `>>` **no ejecuta el comando en absoluto**. La
+> tarea aparece en el syslog como lanzada y no hace nada. Silencioso y
+> desconcertante; se perdió un rato en ello. Si añades una tarea nueva, escribe
+> el log donde el usuario tenga permiso.
+>
+> Y para comprobar que una tarea de cron corre de verdad, **no basta con que el
+> log esté vacío** — eso significa lo mismo que "no se ha ejecutado nunca".
+> Control positivo: romper un registro a propósito y ver si se arregla solo.
+> ```bash
+> . /opt/wacrm/.env
+> CW="https://crm.estaciondemusculacion.com/api/v1/accounts/$CW_ACCOUNT_ID"
+> curl -s -X PUT -H "api_access_token: $CW_TOKEN" -H "Content-Type: application/json" \
+>   -d '{"identifier":"559181959598@s.whatsapp.net"}' "$CW/contacts/2"
+> # esperar 2 minutos: el identifier debe volver solo a 210909033185387@lid
+> ```
 | Semanal | `make status`; que alguien abra WhatsApp en los dos móviles |
 | Mensual | `docker compose pull && docker compose up -d` — **un servicio cada vez** |
 | Antes de actualizar | `./scripts/backup.sh`. Fijar versión concreta, nunca `:latest` |
