@@ -163,16 +163,24 @@ PAGINA = """<!doctype html><html lang="es"><head>
          'Ya puedes cerrar esta p&aacute;gina.</div>';
        document.getElementById('estado').textContent = '';
        clearInterval(tQR); clearInterval(tEst);
-     } else if (d.estado === 'connecting'){
-       // Ni conectado ni con QR: esta negociando. Antes aqui se quedaba el
-       // hueco de la imagen rota y ponia "esperando a que escanees", que es
-       // justo lo contrario de lo que hay que hacer.
-       ocultarQR('Este n\\u00famero est\\u00e1 reconect\\u00e1ndose solo. ' +
-                 'No hace falta escanear nada: espera un momento.');
      } else if (hayQR){
+       // 🚨 ESTE CASO VA ANTES QUE EL DE 'connecting', Y EL ORDEN IMPORTA.
+       // Mientras hay un QR en pantalla el estado ES 'connecting': es
+       // exactamente el estado de un numero esperando a que lo escaneen.
+       // Con la comprobacion de 'connecting' delante, la pagina ESCONDIA el
+       // codigo cada 4 segundos y encima ponia "no hace falta escanear nada",
+       // o sea lo contrario de lo que habia que hacer. El codigo aparecia y
+       // desaparecia y era imposible escanearlo. (31-Ago-2026)
+       // Si hay codigo pintado, mandan las instrucciones de escanearlo.
        // textContent, asi que aqui van caracteres de verdad y NO entidades HTML
        document.getElementById('estado').textContent =
          'Esperando a que escanees el c\\u00f3digo\\u2026';
+     } else if (d.estado === 'connecting'){
+       // SIN codigo en pantalla y negociando: aqui si esta reconectandose
+       // solo y no hay nada que escanear. Antes se quedaba el hueco de la
+       // imagen rota y ponia "esperando a que escanees".
+       ocultarQR('Este n\\u00famero est\\u00e1 reconect\\u00e1ndose solo. ' +
+                 'No hace falta escanear nada: espera un momento.');
      } else {
        // Sin QR en pantalla no se puede pedir que lo escanee: seria mandarle
        // a buscar algo que no esta.
