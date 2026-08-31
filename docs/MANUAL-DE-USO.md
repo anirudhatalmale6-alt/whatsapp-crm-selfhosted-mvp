@@ -37,6 +37,18 @@ Funciona en los dos sentidos:
 
 Todo esto está probado uno por uno en los dos números.
 
+> **Un caso concreto en el que conviene confirmar:** cuando escribes tú primero
+> a alguien que **nunca te ha escrito** por WhatsApp. WhatsApp ha cambiado la
+> forma de identificar a las personas, y de alguien que no ha escrito nunca el
+> sistema todavía no conoce su dirección nueva. Ese primer mensaje puede no
+> llegar, y Chatwoot lo daría por enviado igualmente.
+>
+> En cuanto esa persona te escribe **una sola vez**, queda arreglado solo y ya no
+> vuelve a pasar. Así que si abres tú una conversación nueva y no te contestan,
+> no des por hecho que te están ignorando: confírmalo por otra vía.
+>
+> Con quien ya te ha escrito alguna vez esto no ocurre.
+
 ---
 
 ## 3. Tres reglas que hay que respetar
@@ -155,4 +167,7 @@ Para que no haya sorpresas:
 - Cualquier aviso `URGENTE` de Telegram que no se resuelva solo.
 - Un número que lleva más de 10 minutos caído.
 - Mensajes que no entran aunque el número aparezca conectado.
+- **Mensajes que Chatwoot da por enviados y el cliente dice que no le llegaron.**
+  Es un fallo real y silencioso, no un despiste del cliente. Dime a quién y
+  cuándo, que se comprueba en dos minutos.
 - WhatsApp ha bloqueado un número.

@@ -166,6 +166,76 @@ Si sale `enabled: false` o vacío → `./scripts/provision.sh n1`.
 
 ---
 
+## Caso F2 — Chatwoot dice "enviado", sin error, y el mensaje NO llega
+
+El caso más traicionero de todos, porque **no hay ningún error en ninguna
+pantalla ni en ningún log**. Ocurrió el 31-Ago-2026.
+
+**La causa.** WhatsApp ha cambiado cómo direcciona a las personas. Antes cada
+una era su teléfono (`554197196955@s.whatsapp.net`); en las cuentas ya migradas
+es una dirección interna nueva (`72568119808140@lid`). Todo lo que **entra**
+llega con la dirección nueva. Pero Evolution v2.3.7 guarda el **teléfono** en el
+campo `identifier` del contacto de Chatwoot, y ese campo es exactamente el
+destino que usa al enviar:
+
+```
+chatwoot.service.ts:1337   const chatId = sender?.identifier || sender?.phone_number...
+chatwoot.service.ts:652    identifier: phoneNumber      <-- escribe el TELÉFONO
+```
+
+El motor acepta el envío al teléfono, responde OK y no da error. El mensaje no
+sale. Lo que se manda **desde el móvil** sí llega, porque el móvil ya usa la
+dirección nueva. Esa asimetría es la firma del fallo.
+
+**Cómo se reconoce.** Comparar destino y estado de los salientes:
+
+```bash
+cd /opt/wacrm && . ./.env
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" wacrm-postgres-1 \
+  psql -U "$POSTGRES_USER" -d evolution_n1 -c \
+  "SELECT \"key\"->>'remoteJid' AS destino, status, count(*)
+     FROM \"Message\" WHERE (\"key\"->>'fromMe')::boolean
+     GROUP BY 1,2 ORDER BY 1;"
+```
+
+Sano: los destinos son `...@lid`. Enfermo: hay destinos `...@s.whatsapp.net`
+y **todos** están en `PENDING`.
+
+> ⚠️ **`PENDING` por sí solo NO demuestra que un mensaje no llegara.** Hay
+> mensajes entregados que se quedan en `PENDING` en esta tabla. Lo que demuestra
+> el fallo es el **destino** (`@s.whatsapp.net` en vez de `@lid`), y en última
+> instancia el teléfono de la persona. La prueba buena es mandar el mismo texto
+> por las dos direcciones y preguntar cuál llegó.
+
+**Cómo se arregla.**
+
+```bash
+/opt/wacrm/scripts/reconciliar-lid.py --simular   # ver qué haría
+/opt/wacrm/scripts/reconciliar-lid.py             # aplicarlo
+```
+
+Lee del propio motor la equivalencia teléfono ↔ dirección nueva (viene en cada
+mensaje entrante, campos `remoteJid` / `remoteJidAlt`) y corrige el `identifier`
+de cada contacto de Chatwoot. **Ya se ejecuta solo cada 2 minutos por cron**, así
+que normalmente no hay que lanzarlo a mano.
+
+Se sostiene solo: Evolution únicamente reescribe el `identifier` cuando difiere
+de `remoteJid` (`chatwoot.service.ts:647`). Al dejarlo igual, esa rama deja de
+entrar.
+
+**Lo que este arreglo NO cubre:** una persona que **nunca nos ha escrito**. De
+esa no conocemos su dirección nueva, así que un primer mensaje saliente hacia
+ella puede fallar en silencio. El script las lista al final como
+`sin equivalencia`. En cuanto escriba una vez, queda arreglada sola.
+
+> No se parcheó Evolution a propósito: el fallo vive en un bundle minificado de
+> 485 KB (`dist/main.js`). Un parche montado ahí sobreviviría también a las
+> actualizaciones, y un bundle viejo sobre una versión nueva rompe cosas peores
+> en silencio. Cuando una versión estable de Evolution lo corrija, este script
+> dejará de encontrar nada que cambiar y se puede retirar.
+
+---
+
 ## Caso G — restaurar una copia de seguridad
 
 Las copias están en `/opt/wacrm/backups`, se hacen **cada noche a las 03:00** y
@@ -272,6 +342,7 @@ Para comprobar que la lógica sigue siendo correcta tras tocarla, sin servidor:
 | Diario 03:00 (cron) | `backup.sh` — copia de las 3 bases + volúmenes + config |
 | Lunes 04:00 (cron) | `probar-restauracion.sh` — comprueba que las copias sirven |
 | Cada 15 min (cron) | `vigilar-ip-proxy.sh` — avisa si un proxy cambia de red |
+| Cada 2 min (cron) | `reconciliar-lid.py --cron` — mantiene las direcciones de envío al día (caso F2). Sólo escribe en `/var/log/wacrm-lid.log` cuando cambia algo |
 | Semanal | `make status`; que alguien abra WhatsApp en los dos móviles |
 | Mensual | `docker compose pull && docker compose up -d` — **un servicio cada vez** |
 | Antes de actualizar | `./scripts/backup.sh`. Fijar versión concreta, nunca `:latest` |

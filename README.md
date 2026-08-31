@@ -26,6 +26,8 @@ scripts/probar-watchdog.sh  banco de pruebas del vigilante (8 escenarios, sin se
 scripts/add-number.sh       genera el bloque para el número 3, 4, 5...
 scripts/verificar-proxy.sh  las 5 comprobaciones de un proxy 4G, con veredicto
 scripts/vigilar-ip-proxy.sh anota la IP de cada proxy y avisa si CAMBIA DE RED
+scripts/reconciliar-lid.py  mantiene al día la dirección de envío de cada contacto
+                            (sin esto, Chatwoot dice "enviado" y no llega: RUNBOOK caso F2)
 docs/ARQUITECTURA.md        por qué este stack y cómo se aísla cada número
 docs/MANUAL-DE-USO.md       manual del día a día (para quien atiende WhatsApp)
 docs/RUNBOOK.md             qué hacer cuando algo se cae (para quien tiene el servidor)
